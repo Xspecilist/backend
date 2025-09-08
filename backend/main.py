@@ -11,7 +11,7 @@ BRAVE_API_KEY = "BSAYcmGcjd6eznA7um8osQlNpvCfD51"
 
 
 HF_API_URL = "https://api-inference.huggingface.co/models/sshleifer/distilbart-cnn-12-6"
-
+HF_API_TOKEN = "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" 
 HF_HEADERS = {"Authorization": f"Bearer {HF_API_TOKEN}", "Accept": "application/json"}
 
 # CORS setup (allow only your frontend + trycloudflare pattern)
