@@ -18,7 +18,11 @@ HF_HEADERS = {"Authorization": f"Bearer {HF_API_TOKEN}", "Accept": "application/
 # CORS config (same as before)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://froont-h1cg-2ghkb3hql-anshs-projects-486894cf.vercel.app",  # <-- exact Vercel origin from your error
+        "http://localhost:3000",  # local dev (optional)
+    ],
+    allow_origin_regex=r"^https://[a-z0-9-]+\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
