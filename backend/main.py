@@ -1,43 +1,62 @@
-from fastapi import FastAPI, Query
+# server.py
+from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-import requests, trafilatura, time, os
+import requests, trafilatura, time, os, logging
 from dotenv import load_dotenv
 
-# Load .env
+# load .env in local dev
 load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Read from environment
+# read secrets from env (must set on Railway / locally)
 BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")
 HF_API_TOKEN = os.getenv("HF_API_TOKEN")
 
-HF_API_URL = "https://api-inference.huggingface.co/models/sshleifer/distilbart-cnn-12-6"
-HF_HEADERS = {"Authorization": f"Bearer {HF_API_TOKEN}", "Accept": "application/json"}
+if not BRAVE_API_KEY:
+    logger.warning("BRAVE_API_KEY not set. Requests to Brave API will fail.")
+if not HF_API_TOKEN:
+    logger.warning("HF_API_TOKEN not set. HF summarization will fail.")
 
-# CORS config (same as before)
+HF_API_URL = "https://api-inference.huggingface.co/models/sshleifer/distilbart-cnn-12-6"
+HF_HEADERS = {"Authorization": f"Bearer {HF_API_TOKEN}"} if HF_API_TOKEN else {}
+
+# CORS: allow localhost for dev and vercel preview domains (regex)
+# CORS: allow localhost for dev and your Vercel app only
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://froont-h1cg.vercel.app",  # <-- exact Vercel origin from your error
-        "http://localhost:3000",  # local dev (optional)
+        "http://localhost:3000",             # local dev
+        "https://froont-h1cg.vercel.app",    # your deployed frontend
     ],
-    allow_origin_regex=r"^https://[a-z0-9-]+\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Simple health endpoint
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+# optional request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"REQ {request.method} {request.url} ORIGIN={request.headers.get('origin')}")
+    response = await call_next(request)
+    logger.info(f"RESP {response.status_code} {request.url}")
+    return response
+
+
 def summarize_via_hf(text: str, max_retries: int = 2, backoff: float = 1.0) -> str:
-    """
-    Call Hugging Face Inference API to summarize `text`.
-    Returns the summary string, or an error message string (prefixed) on failure.
-    Retries on transient errors (429, network).
-    """
+    if not HF_API_TOKEN:
+        return "Summary error: HF_API_TOKEN not configured"
     if not text or not text.strip():
         return None
 
-    # You can tune parameters (min_length/max_length) here if you wish
     payload = {
         "inputs": text,
         "parameters": {"min_length": 30, "max_length": 130, "do_sample": False},
@@ -47,35 +66,24 @@ def summarize_via_hf(text: str, max_retries: int = 2, backoff: float = 1.0) -> s
     while attempt <= max_retries:
         try:
             resp = requests.post(HF_API_URL, headers=HF_HEADERS, json=payload, timeout=30)
-            # rate-limited
             if resp.status_code == 429:
-                # exponential backoff-ish
                 time.sleep(backoff * (attempt + 1))
                 attempt += 1
                 continue
-
             if resp.status_code >= 400:
-                # return an error string so caller can include it in the response
                 return f"Summary error (status {resp.status_code}): {resp.text[:500]}"
-
             data = resp.json()
-
-            # HF returns a list like: [{"summary_text":"..."}]
             if isinstance(data, list) and len(data) > 0:
                 first = data[0]
                 if isinstance(first, dict) and "summary_text" in first:
                     return first["summary_text"]
                 if isinstance(first, str):
                     return first
-
-            # some endpoints may return a dict with 'error'
             if isinstance(data, dict):
                 if "error" in data:
                     return f"Summary error: {data.get('error')}"
                 if "summary_text" in data:
                     return data["summary_text"]
-
-            # fallback: stringify the response
             return str(data)[:1000]
         except requests.exceptions.RequestException as e:
             if attempt < max_retries:
@@ -83,7 +91,6 @@ def summarize_via_hf(text: str, max_retries: int = 2, backoff: float = 1.0) -> s
                 attempt += 1
                 continue
             return f"Summary request failed: {str(e)}"
-
     return "Summary unavailable after retries"
 
 
@@ -93,11 +100,9 @@ def search_and_summarize(
     country: str = Query("US", description="Country code (e.g., US, BE, IN)"),
     ui_lang: str = Query("en-US", description="UI language (e.g., en-US, fr-FR, hi-IN)"),
 ):
-    """
-    Search Brave Web API with optional country and ui_lang, fetch pages,
-    extract text with trafilatura, and summarize each page using the Hugging Face Inference API.
-    Returns results list and a combined_summary.
-    """
+    if not BRAVE_API_KEY:
+        raise HTTPException(status_code=500, detail="BRAVE_API_KEY not configured")
+
     url = "https://api.search.brave.com/res/v1/web/search"
     headers = {
         "Accept": "application/json",
@@ -106,9 +111,15 @@ def search_and_summarize(
     }
     params = {"q": q, "count": 7, "country": country, "ui_lang": ui_lang}
 
-    response = requests.get(url, headers=headers, params=params)
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+    except Exception as e:
+        logger.exception("Error calling Brave API")
+        raise HTTPException(status_code=502, detail=f"Brave API request failed: {e}")
+
     if response.status_code != 200:
-        return {"error": response.status_code, "message": response.text}
+        logger.error("Brave API returned non-200: %s %s", response.status_code, response.text[:400])
+        raise HTTPException(status_code=502, detail=f"Brave API: {response.status_code}")
 
     data = response.json()
     results = []
@@ -120,21 +131,16 @@ def search_and_summarize(
         summary = None
 
         try:
-            # fetch and extract page content
             downloaded = trafilatura.fetch_url(url_item)
             if downloaded:
                 extracted = trafilatura.extract(downloaded)
                 if extracted:
-                    # Truncate to 900 chars for faster summarization (tweak as needed)
                     content_preview = extracted[:900]
-
-                    # Call HF Inference API to summarize the content_preview
                     summary = summarize_via_hf(content_preview)
-
-                    # Only add summary to combined list if it's not an HF error string
                     if summary and not (summary.startswith("Summary error") or summary.startswith("Summary request failed")):
                         url_summaries.append(summary)
         except Exception as e:
+            logger.exception("Error extracting URL: %s", url_item)
             content_preview = f"Error extracting: {str(e)}"
 
         results.append(
@@ -147,7 +153,6 @@ def search_and_summarize(
             }
         )
 
-    # Combine all URL summaries into a single text
     combined_summary = " ".join(url_summaries) if url_summaries else None
 
     return {
