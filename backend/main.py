@@ -18,11 +18,7 @@ HF_HEADERS = {"Authorization": f"Bearer {HF_API_TOKEN}", "Accept": "application/
 # CORS config (same as before)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://froont-h1cg.vercel.app",
-        "http://localhost:3000",
-    ],
-    allow_origin_regex=r"^https://[a-z0-9-]+\.trycloudflare\.com$",
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
