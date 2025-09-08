@@ -1,32 +1,32 @@
-# server.py
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-import requests
-import trafilatura
-import time
+import requests, trafilatura, time, os
+from dotenv import load_dotenv
+
+# Load .env
+load_dotenv()
 
 app = FastAPI()
 
-BRAVE_API_KEY = "BSAYcmGcjd6eznA7um8osQlNpvCfD51"
-
+# Read from environment
+BRAVE_API_KEY = os.getenv("BRAVE_API_KEY")
+HF_API_TOKEN = os.getenv("HF_API_TOKEN")
 
 HF_API_URL = "https://api-inference.huggingface.co/models/sshleifer/distilbart-cnn-12-6"
-HF_API_TOKEN = "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" 
 HF_HEADERS = {"Authorization": f"Bearer {HF_API_TOKEN}", "Accept": "application/json"}
 
-# CORS setup (allow only your frontend + trycloudflare pattern)
+# CORS config (same as before)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://froont-h1cg.vercel.app",  # your Vercel frontend
-        "http://localhost:3000",           # dev
+        "https://froont-h1cg.vercel.app",
+        "http://localhost:3000",
     ],
     allow_origin_regex=r"^https://[a-z0-9-]+\.trycloudflare\.com$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 def summarize_via_hf(text: str, max_retries: int = 2, backoff: float = 1.0) -> str:
     """
